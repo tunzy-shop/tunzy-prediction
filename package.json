@@ -1,0 +1,15 @@
+{
+  "name": "tunzy-prediction",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000"
+  },
+  "dependencies": {
+    "next": "14.0.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "isomorphic-unfetch": "^4.0.0"
+  }
+}
