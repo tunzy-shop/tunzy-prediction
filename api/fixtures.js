@@ -1,106 +1,95 @@
+// pages/api/fixtures.js
 import fetch from "isomorphic-unfetch";
+import { LEAGUES } from "../../lib/leagues";
+
+const BASE_URL = "https://api.football-data.org/v4";
+const API_KEY = process.env.FOOTBALL_API_KEY; // put this in Vercel env
+
+async function fetchMatches(leagueId, dateStr) {
+  const url = `${BASE_URL}/competitions/${leagueId}/matches?dateFrom=${dateStr}&dateTo=${dateStr}`;
+  try {
+    const r = await fetch(url, { headers: { "X-Auth-Token": API_KEY } });
+    if (!r.ok) {
+      // return empty on non-OK (rate-limit / no data)
+      return [];
+    }
+    const j = await r.json();
+    return j?.matches || [];
+  } catch (e) {
+    console.error("fetchMatches error:", e);
+    return [];
+  }
+}
+
+function fallbackFixture(leagueName, idSuffix, dateStr) {
+  return {
+    id: `FALLBACK-${leagueName}-${idSuffix}`,
+    home: `${leagueName} Home`,
+    away: `${leagueName} Away`,
+    kickoff: `${dateStr}T18:00:00Z`,
+    competition: leagueName,
+    badge: leagueName.toLowerCase().includes("premier") ? "/leagues/premier.png" : "/leagues/laliga.png"
+  };
+}
 
 export default async function handler(req, res) {
-  const auth = req.headers.cookie && req.headers.cookie.includes("tunzy_auth=1");
-  if (!auth) return res.status(401).json({ error: "unauthenticated" });
+  if (!API_KEY) {
+    return res.status(500).json({ error: "Missing FOOTBALL_API_KEY in environment" });
+  }
 
-  const API_KEY = process.env.FOOTBALL_API_KEY;
-  if (!API_KEY) return res.status(500).json({ error: "missing football-data.org API key" });
-
+  // calculate today and tomorrow in UTC date strings (yyyy-mm-dd)
   const offset = parseInt(process.env.TZ_OFFSET_HOURS || "1", 10);
   const now = new Date(Date.now() + offset * 3600 * 1000);
   const todayStr = now.toISOString().slice(0, 10);
   const tomorrow = new Date(now.getTime() + 24 * 3600 * 1000);
   const tomorrowStr = tomorrow.toISOString().slice(0, 10);
 
-  const leagues = [
-    { code: "PL", name: "Premier League", badge: "/leagues/premier.png" },
-    { code: "PD", name: "La Liga", badge: "/leagues/laliga.png" }
-  ];
-
-  async function fetchMatches(leagueCode, dateStr) {
-    const url = `https://api.football-data.org/v4/competitions/${leagueCode}/matches?dateFrom=${dateStr}&dateTo=${dateStr}`;
-    const r = await fetch(url, { headers: { "X-Auth-Token": API_KEY } });
-
-    if (!r.ok) return [];
-    const j = await r.json();
-    return j.matches || [];
-  }
-
-  const parse = (m, badge) => ({
-    id: String(m.id),
-    home: m.homeTeam?.name || "Home",
-    away: m.awayTeam?.name || "Away",
-    kickoff: m.utcDate,
-    competition: m.competition?.name || "",
-    badge
-  });
-
-  let todayFixtures = [];
-  let tomorrowFixtures = [];
-
   try {
-    for (const L of leagues) {
-      const [fx1, fx2] = await Promise.all([
-        fetchMatches(L.code, todayStr),
-        fetchMatches(L.code, tomorrowStr)
+    const results = { today: [], tomorrow: [] };
+
+    for (const league of [LEAGUES.PREMIER, LEAGUES.LALIGA]) {
+      const [todayMatches, tomorrowMatches] = await Promise.all([
+        fetchMatches(league.id, todayStr),
+        fetchMatches(league.id, tomorrowStr)
       ]);
 
-      // Add matches if available
-      todayFixtures.push(...fx1.map(m => parse(m, L.badge)));
-      tomorrowFixtures.push(...fx2.map(m => parse(m, L.badge)));
+      // map real matches
+      if ((todayMatches || []).length > 0) {
+        const mapped = todayMatches.map(m => ({
+          id: String(m.id),
+          home: m.homeTeam?.name || "Home",
+          away: m.awayTeam?.name || "Away",
+          kickoff: m.utcDate,
+          competition: m.competition?.name || league.name,
+          badge: league.badge
+        }));
+        results.today.push(...mapped);
+      }
+
+      if ((tomorrowMatches || []).length > 0) {
+        const mapped = tomorrowMatches.map(m => ({
+          id: String(m.id),
+          home: m.homeTeam?.name || "Home",
+          away: m.awayTeam?.name || "Away",
+          kickoff: m.utcDate,
+          competition: m.competition?.name || league.name,
+          badge: league.badge
+        }));
+        results.tomorrow.push(...mapped);
+      }
+
+      // fallback per-league if empty
+      if ((todayMatches || []).length === 0) {
+        results.today.push(fallbackFixture(league.name, "1", todayStr));
+      }
+      if ((tomorrowMatches || []).length === 0) {
+        results.tomorrow.push(fallbackFixture(league.name, "1", tomorrowStr));
+      }
     }
 
-    // ---- FALLBACK FIXTURES ----
-    if (todayFixtures.length === 0) {
-      todayFixtures = [
-        {
-          id: "FALLBACK1",
-          home: "Barcelona",
-          away: "Real Betis",
-          kickoff: todayStr + "T18:00:00Z",
-          competition: "La Liga",
-          badge: "/leagues/laliga.png"
-        },
-        {
-          id: "FALLBACK2",
-          home: "Chelsea",
-          away: "Everton",
-          kickoff: todayStr + "T20:00:00Z",
-          competition: "Premier League",
-          badge: "/leagues/premier.png"
-        }
-      ];
-    }
-
-    if (tomorrowFixtures.length === 0) {
-      tomorrowFixtures = [
-        {
-          id: "FALLBACK3",
-          home: "Atlético Madrid",
-          away: "Granada",
-          kickoff: tomorrowStr + "T18:00:00Z",
-          competition: "La Liga",
-          badge: "/leagues/laliga.png"
-        },
-        {
-          id: "FALLBACK4",
-          home: "Liverpool",
-          away: "West Ham",
-          kickoff: tomorrowStr + "T20:00:00Z",
-          competition: "Premier League",
-          badge: "/leagues/premier.png"
-        }
-      ];
-    }
-
-    return res.json({
-      today: todayFixtures,
-      tomorrow: tomorrowFixtures
-    });
-
+    return res.json(results);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "failed to fetch fixtures" });
+    console.error("fixtures handler error:", e);
+    return res.status(500).json({ error: "Failed to fetch fixtures" });
   }
 }
